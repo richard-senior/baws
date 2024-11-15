@@ -6,6 +6,25 @@ source ./conf.sh
 ### ROLE           #####################################################
 ########################################################################
 
+function createTrustPolicy {
+trust=$(cat <<-END
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "",
+            "Effect": "Allow",
+            "Principal": {
+                "Service": "ec2.amazonaws.com"
+            },
+            "Action": "sts:AssumeRole"
+        }
+    ]
+}
+END
+)
+}
+
 function getRoleId {
     if [ -z "$1" ]; then
         echo "you must role name in first parameter"
@@ -163,7 +182,6 @@ function deleteInstanceProfile {
     fi
 }
 
-
 # Creates an instance profile and adds a role to it
 # You can create the role first (it must have the same name)
 # or this function will create a role and leave it blank
@@ -194,4 +212,81 @@ function createInstanceProfile {
     # attach role to instance profile
     aws --profile $PROFILE --region $REGION iam add-role-to-instance-profile --instance-profile-name "$1" --role-name "$1"
     echo "$ipid"
+}
+
+
+function deleteUnusedRolesByProfileAndDaysOld {
+  if [ -z "$1" ]; then
+      echo "must supply profile name in first parameter"
+      return 1
+  fi
+  total_deleted=0
+  local ROLE_REGEX="--path-prefix /s"
+  #local ROLE_REGEX="/"
+
+  #90 days ago
+  local fourhundreddays=$(date --date '400 days ago' +'%s')
+  local ninetydays=$(date --date '400 days ago' +'%s')
+  local ROLES=$(aws --profile $1 iam list-roles $ROLE_REGEX --no-paginate --max-items 1000 --query "Roles[].RoleName" --output text)
+  #aws --profile non-production iam list-roles --no-paginate --query "Roles[].RoleLastUsed" --output json
+  #RoleLastUsed
+  for ROLE in $ROLES; do
+    echo "total deleted $total_deleted"
+    local rl=$(aws --profile $1 iam get-role --no-paginate --role-name $ROLE --output json)
+    local crd=$(echo "$rl" | jq -r '.Role.CreateDate')
+    if [ ! -z "$crd" ] || [[ "$crd" != "null" ]] || [[ "$crd" != "None" ]]; then
+      local crdd=$(date --date $crd +'%s')
+      if [ $crdd -gt $ninetydays ]; then
+        continue
+      fi
+    else
+      echo "role $ROLE has no create date.. skipping"
+      continue
+    fi
+    local lud=$(echo "$rl" | jq -r '.Role.RoleLastUsed.LastUsedDate')
+    if [ -z "$lud" ] || [[ "$lud" == "null" ]] || [[ "$lud" == "None" ]]; then
+      echo "$ROLE [Expired - no last used info, created $crd]"
+      deleteRole $1 $ROLE
+    else
+      #2022-08-31T15:21:34+00:00
+      local d=$(date --date $lud +'%s')
+      if [ $d -lt $ninetydays ]; then
+        echo "$ROLE [Expired - $lud more than n days old. Created $crd]"
+        deleteRole $1 $ROLE
+      else
+        echo "ignoring $ROLE less than n days since last use"
+      fi
+    fi
+  done
+  echo "total deleted $total_deleted"
+}
+
+function listInstanceProfilesForPlatform {
+  local rgn=$(getRegion)
+  local plat=$(getPlatform)
+  local foo=$(aws --profile non-production --region $rgn iam list-instance-profiles --query "InstanceProfiles[].InstanceProfileName" --output text)
+  if [ -z "$foo" ]; then
+    echo "no instance profiles found!?"
+    return
+  fi
+  for i in $foo; do
+    if [[ "$i" == *"$plat"* ]]; then
+      echo "$i"
+    fi
+  done
+}
+
+
+function listIamRolesForPlatform {
+  local plat=$(getPlatform)
+  local rgn=$(getRegion)
+  local foo=$(aws --profile non-production --region $rgn iam list-roles --query "Roles[].[RoleId,RoleName]" --output text)
+  echo "$foo" | while read -r line
+  do
+    local name=$(awk '{print $NF;}' <<< "$line")
+    local id=$(awk '{print $1;}' <<< "$line")
+    if [[ $name == *"$plat"* ]]; then
+      echo "$name"
+    fi
+  done
 }

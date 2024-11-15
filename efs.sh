@@ -1,13 +1,12 @@
 #!/bin/bash
 
-source ./conf.sh
+source ./securityGroups.sh
 
 ########################################################################
 ### EFS            #####################################################
 ########################################################################
 
 function getEfsFileSystemId() {
-
     if [ -z "$1" ]; then
         echo "you must filesystem name in first parameter"
         return
@@ -25,8 +24,34 @@ function getEfsFileSystemId() {
     fi
 }
 
-function getEfsDnsName() {
+function isEfsMountPointsExists {
+    if [ -z "$1" ]; then
+        echo "you must filesystem name in first parameter"
+        return
+    fi
 
+    local fsid=$(getEfsFileSystemId $1)
+    if [ -z "$fsid" ]; then
+        echo "Error: Could not retrieve EFS File System ID." >&2
+        return 1
+    fi
+
+    local mount_targets=$(aws --profile $PROFILE --region $REGION efs describe-mount-targets \
+        --file-system-id $fsid \
+        --query 'MountTargets[*].MountTargetId' \
+        --output text)
+
+    if [ -z "$mount_targets" ]; then
+        echo "No mount points exist for EFS filesystem $fsid."
+        return 1
+    else
+        echo "Mount points exist for EFS filesystem $fsid:"
+        echo "$mount_targets"
+        return 0
+    fi
+}
+
+function getEfsDnsName() {
     if [ -z "$1" ]; then
         echo "you must filesystem name in first parameter"
         return
@@ -72,10 +97,13 @@ function createEfsMountpoints {
         echo "you must filesystem name in first parameter"
         return
     fi
-
+    if [ -z "$2" ]; then
+        echo "you must supply the security group name for this filesystem in the second parameter"
+        return
+    fi
     local fsid=$(getEfsFileSystemId $1)
     local sns=$(getSpaceDelimitedSubnetsForPlatform)
-    local sgid=$(getSgId $EFS_SG_NAME)
+    local sgid=$(getSgId $2)
     # Create mount targets for each subnet
     echo "About to create mountpoints for EFS filesystem on vpc subnets"
     for subnet in $sns; do
@@ -157,6 +185,29 @@ function createEfsFileSystem {
     done
 
     createEfsMountpoints
+}
+
+function destroyEfsMounts {
+    if [ -z "$1" ]; then
+        echo "you must filesystem name in first parameter"
+        return
+    fi
+    local foo=$(aws --profile $PROFILE --region $REGION efs describe-file-systems --query "FileSystems[?Name==`$1`].FileSystemId" --output text)
+    if [ ! -z "$foo" ]; then
+        # remove mount targets
+        local mts=$(aws --profile $PROFILE --region $REGION efs describe-mount-targets --file-system-id $foo --query "MountTargets[].MountTargetId" --output text)
+        if [ ! -z "$mts" ]; then
+            for mt in $mts; do
+                echo "deleting mount target $mt"
+                aws --profile $PROFILE --region $REGION efs delete-mount-target --mount-target-id "$mt"
+            done
+            echo "waiting for mountpoints to clear"
+            sleep 5
+        fi
+
+        echo "deleting efs mount $foo"
+        aws --profile $PROFILE --region $REGION efs delete-file-system --file-system-id "$foo"
+    fi
 }
 
 function destroyEfsFileSystem {

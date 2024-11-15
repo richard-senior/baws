@@ -117,3 +117,9 @@ function deleteSg {
             return 1
     fi
 }
+
+function getUnusedSecurityGroups {
+  #majical join query finds unused security groups
+  local foo=`comm -23  <(aws ec2 --profile $PROFILE --region $REGION describe-security-groups --query 'SecurityGroups[*].GroupId'  --output text | tr '\t' '\n'| sort) <(aws ec2 --profile $PROFILE --region $REGION describe-instances --query 'Reservations[*].Instances[*].SecurityGroups[*].GroupId' --output text | tr '\t' '\n' | sort | uniq)`
+  echo "$foo"
+}

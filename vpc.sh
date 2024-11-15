@@ -6,23 +6,32 @@ source ./tags.sh
 ### VPC           ######################################################
 ########################################################################
 
-function getVpcIdForPlatform {
-    if [ -z "$1" ]; then
-        echo "must supply platform name in first parmeter"
-        return
+function getVpcId {
+    if [ ! -z "$VPCID" ]; then
+        echo "$VPCID"
+        return 0
     fi
-    local ret=$(aws ec2 --profile $PROFILE --region $REGION describe-vpcs --filters "Name=tag:platform-name, Values=$1" --query "Vpcs[*].[VpcId]" --output text)
-    echo "$ret"
+    if [ ! -z "$PLATFORM" ]; then
+        local vpcid=$(aws ec2 --profile $PROFILE --region $REGION describe-vpcs --filters "Name=tag:platform-name, Values=$PLATFORM" --query "Vpcs[*].[VpcId]" --output text 2>/dev/null)
+        if [ ! -z "$vpcid" ]; then
+            export VPCID=$vpcid
+            echo "$VPCID"
+            return 0
+        else
+            return 1
+        fi
+    fi
+    return 1
 }
-
 
 function getPrivateSubnetId {
     local scheme="private"
     if [ -z "$1" ]; then
-        echo "must supply index in first parmeter"
+        echo "must supply index (which subnet) in first parmeter"
+        echo "Generally you'll have many subnets on a vpc"
         return
     fi
-    local vpcid=$(getVpcIdForPlatform $PLATFORM)
+    local vpcid=$(getVpcId)
     local sn=$(aws --profile $PROFILE --region $REGION ec2 describe-subnets --filters Name=vpc-id,Values=$vpcid "Name=tag:scheme,Values=$scheme" --query "Subnets[].SubnetId" --output text)
     ret=()
     for i in $sn; do
@@ -33,7 +42,7 @@ function getPrivateSubnetId {
 
 function getCommaDelimitedSubnetsForPlatform {
     local scheme="private"
-    local vpcid=$(getVpcIdForPlatform $PLATFORM)
+    local vpcid=$(getVpcId)
     local sn=$(aws --profile $PROFILE --region $REGION ec2 describe-subnets --filters Name=vpc-id,Values=$vpcid "Name=tag:scheme,Values=$scheme" --query "Subnets[].SubnetId" --output text)
     local ret=""
     for i in $sn; do
@@ -45,7 +54,7 @@ function getCommaDelimitedSubnetsForPlatform {
 
 function getSpaceDelimitedSubnetsForPlatform {
     local scheme="private"
-    local vpcid=$(getVpcIdForPlatform $PLATFORM)
+    local vpcid=$(getVpcId)
     local sn=$(aws --profile $PROFILE --region $REGION ec2 describe-subnets --filters Name=vpc-id,Values=$vpcid "Name=tag:scheme,Values=$scheme" --query "Subnets[].SubnetId" --output text)
     local ret=""
     for i in $sn; do
@@ -56,7 +65,7 @@ function getSpaceDelimitedSubnetsForPlatform {
 
 function getSubnetsForPlatform {
     local scheme="private"
-    local vpcid=$(getVpcIdForPlatform $PLATFORM)
+    local vpcid=$(getVpcId)
     # aws ec2 describe-subnets --filters Name=vpc-id,Values=vpc-0099b918d2a911701 --region us-east-2 --query "Subnets[].SubnetId" --output text
     local sn=$(aws --profile $PROFILE --region $REGION ec2 describe-subnets --filters Name=vpc-id,Values=$vpcid "Name=tag:scheme,Values=$scheme" --query "Subnets[].SubnetId" --output text)
     local ret="["
@@ -68,7 +77,7 @@ function getSubnetsForPlatform {
     echo "$ret"
 }
 
-function deleteDbSubnetGroup {
+function deleteSubnetGroup {
     if [ -z "$1" ]; then
         echo "you must subnet group name in first parameter"
         return
@@ -125,4 +134,106 @@ function createDbSubnetGroup {
         --db-subnet-group-description "Subnet group for the aurora DB that backs devlake" \
         --subnet-ids $SUBNETS \
         --tags $(getTagsRaw "$1")
+}
+
+
+function listVpcPeeringConnectionsForPlatform {
+  local rgn=$(getRegion)
+  local vpc=$(getVpcId)
+  local pcs=$(aws --profile non-production --region $rgn ec2 describe-vpc-peering-connections --filters "Name=requester-vpc-info.vpc-id,Values=$vpc" --query "VpcPeeringConnections[].VpcPeeringConnectionId" --output text)
+  echo "$pcs"
+}
+
+function deleteVpcPeeringConnectionsForPlatform {
+  local foo=$(listVpcPeeringConnectionsForPlatform)
+  local rgn=$(getRegion)
+  for i in $foo; do
+    aws --profile non-production --region $rgn ec2 delete-vpc-peering-connection --vpc-peering-connection-id $i
+    echo "$i"
+  done
+}
+
+
+function getNatGatewaysForPlatform {
+  if [ -z $1]; then
+    local plat=$(getPlatform)
+  else
+    local plat=$1
+  fi
+  local ngwids=$(aws --profile non-production ec2 describe-nat-gateways --filter "Name=tag:platform-name,Values=$plat" --query "NatGateways[].NatGatewayId" --output text)
+  echo "$ngwids"
+}
+
+function getNatGatewaysForVpcId {
+  local rgn=$(getRegion)
+  local vpc=$(getVpcId)
+  local ids=$(aws --profile non-production --region $rgn ec2 describe-nat-gateways --filter "Name=vpc-id,Values=$vpc" --query "NatGateways[].NatGatewayId" --output text)
+  echo "$ids"
+}
+
+function deleteNatGatewaysForPlatform {
+  local foo=$(getNatGatewaysForVpcId)
+  local rgn=$(getRegion)
+  for i in $foo;do
+    aws --profile non-production --region $rgn ec2 delete-nat-gateway --nat-gateway-id $i
+  done
+}
+
+
+###################
+# Network Interfaces
+###################
+
+function deleteNetworkInterfaces {
+  local foo=$(getNetworkInterfacesForPlatform)
+  if [[ -z "$foo" ]]; then
+    echo "no network intefaces for this platform"
+    return
+  fi
+  local a=( $foo )
+  for i in ${a[*]}; do
+    aws --profile $PROFILE --region $REGION ec2 delete-network-interface --network-interface-id $i
+  done
+}
+
+function getNetworkInterfacesForPlatform {
+  local vpcid=$(getVpcId)
+  if [ -z "$vpcid" ]; then
+    return
+  fi
+  #aws ec2 --profile non-production --region eu-west-1 describe-network-interfaces --filters "Name=vpc-id,Values=vpc-0219a66f6361bc1ad" --query "NetworkInterfaces[].[NetworkInterfaceId]" --output text
+  local foo=$(aws ec2 --profile $PROFILE --region $REGION describe-network-interfaces --filters "Name=vpc-id,Values=$VPCID" --query "NetworkInterfaces[].[NetworkInterfaceId]" --output text)
+  echo "$foo"
+}
+
+function listVpcEndpoints {
+  local rgn=$(getRegion)
+  local vpcid=$(getVpcId)
+  local foo=$(aws --profile non-production --region $rgn ec2 describe-vpc-endpoints --filters "Name=vpc-id,Values=$vpcid" --query "VpcEndpoints[].VpcEndpointId" --output text)
+  echo "$foo"
+}
+
+function deleteVpcEndpoints {
+  local rgn=$(getRegion)
+  local vpcid=$(getVpcId)
+  if [ -z "$vpcid" ]; then
+    return
+  fi
+  local foo=$(listVpcEndpoints)
+  if [[ -z "$foo" ]]; then
+    echo "no vpc endpoints for this platform"
+    return
+  fi
+  for i in $foo; do
+    aws --profile non-production --region $rgn ec2 delete-vpc-endpoints --vpc-endpoint-ids $i
+  done
+}
+
+function deleteVpc {
+  local rgn=$(getRegion)
+  local vpc=$(getVpcId)
+  if [ -z "$vpc" ]; then
+    return
+  fi
+  aws --profile non-production --region $rgn ec2 delete-vpc --vpc-id $vpc
 }
