@@ -1,29 +1,65 @@
 #!/bin/bash
 
-source ./conf.sh
-
 ########################################################################
-### ROLE           #####################################################
+### POLICIES           #################################################
 ########################################################################
 
+#### policies
 function createTrustPolicy {
+    if [ -z "$1" ]; then
+        echo "you must supply the service in the first parameter (ie ec2.amazonaws.com)"
+        return 1
+    fi
 trust=$(cat <<-END
 {
-    "Version": "2012-10-17",
-    "Statement": [
+    \"Version\": \"2012-10-17\",
+    \"Statement\": [
         {
-            "Sid": "",
-            "Effect": "Allow",
-            "Principal": {
-                "Service": "ec2.amazonaws.com"
+            \"Sid\": \"\",
+            \"Effect\": \"Allow\",
+            \"Principal\": {
+                \"Service\": \"$1\"
             },
-            "Action": "sts:AssumeRole"
+            \"Action\": \"sts:AssumeRole\"
         }
     ]
 }
 END
 )
+    echo "$trust"
+    return 0
 }
+
+function createPolicy {
+    echo "TODO THIS!"
+    echo "add tags if possible"
+}
+
+function attachManagedPolicyToRole {
+    if [ -z "$1" ]; then
+        echo "you must supply the role name on which you want the policy attaching in the first parameter"
+        return 1
+    fi
+    if [ -z "$2" ]; then
+        echo "you must supply the aws policy arn in the second parameter (ie arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore)"
+        return 1
+    fi
+    local rid=$(getRoleId "$1")
+    if [ -z "$rid" ]; then
+        echo "role $1 does not exist"
+        return 1
+    fi
+    local foo=$(aws --profile $PROFILE --region $REGION iam attach-role-policy --role-name "$1" --policy-arn $2 2>/dev/null)
+    if [ $? -eq 0 ]; then
+        echo "policy $2 attached to role $1"
+        return 0
+    fi
+    return 1
+}
+
+########################################################################
+### ROLES           ####################################################
+########################################################################
 
 function getRoleId {
     if [ -z "$1" ]; then
@@ -33,35 +69,41 @@ function getRoleId {
     local foo=$(aws --profile $PROFILE --region $REGION iam get-role --role-name "$1" --query "Role.RoleId" --output text 2>/dev/null)
     if [ $? -eq 0 ]; then
         echo "$foo"
+        return 0
     fi
+    return 1
 }
 
 function getRoleName {
     if [ -z "$1" ]; then
         echo "you must role id in first parameter"
-        return
+        return 1
     fi
     local foo=$(aws --profile $PROFILE --region $REGION iam list-roles --query "Roles[?RoleId==$1].RoleName" --output text 2>/dev/null)
     if [ $? -eq 0 ]; then
         echo "$foo"
+        return 0
     fi
+    return 1
 }
 
 function getRoleArn {
     if [ -z "$1" ]; then
         echo "you must role name in first parameter"
-        return
+        return 1
     fi
     local foo=$(aws --profile $PROFILE --region $REGION iam get-role --role-name "$1" --query "Role.Arn" --output text 2>/dev/null)
     if [ $? -eq 0 ]; then
         echo "$foo"
+        return 0
     fi
+    return 1
 }
 
 function roleExists {
     if [ -z "$1" ]; then
         echo "you must role name in first parameter"
-        return
+        return 1
     fi
     if aws --profile $PROFILE --region $REGION iam get-role --role-name "$1" &>/dev/null; then
         return 0
@@ -73,37 +115,54 @@ function roleExists {
 function deleteRole {
     if [ -z "$1" ]; then
         echo "you must role name in first parameter"
-        return
+        return 1
     fi
     if ! roleExists "$1"; then
         echo "role $1 does not exist. No need to delete it"
-        return
+        return 1
     fi
 
     local n="$1"
-    local foo=$(aws --profile ${PROFILE} --region ${REGION} iam get-instance-profile --instance-profile-name "$n" --query "InstanceProfile.InstanceProfileId" --output text 2>/dev/null)
-    if [ ! -z "$foo" ]; then
-        echo "deleting instance profile $foo"
-        aws --profile $PROFILE --region $REGION iam remove-role-from-instance-profile --instance-profile-name "$n" --role-name "$n"
-        aws --profile $PROFILE --region $REGION iam delete-instance-profile --instance-profile-name "$n"
+    if isInstanceProfileExists "$n"; then
+        echo "deleting instance profile $n"
+        local foo=$(aws --profile $PROFILE --region $REGION iam remove-role-from-instance-profile --instance-profile-name "$n" --role-name "$n" 2>/dev/null)
+        if [ $? -ne 0 ]; then
+            echo "failed to detach role from instance profile $n"
+            return 1
+        fi
+        local foo=$(aws --profile $PROFILE --region $REGION iam delete-instance-profile --instance-profile-name "$n" 2>/dev/null)
+        if [ $? -ne 0 ]; then
+            echo "failed to delete instance profile $n"
+            return 1
+        fi
+        return 0
     fi
 
-    local rid=$(aws --profile $PROFILE --region $REGION iam get-role --role-name "$n" --query "Role.RoleId" --output text)
+    local rid=$(getRoleId "$n")
     if [ -z "$rid" ]; then
         echo "no role found with name $n"
-        return
+        return 1
     else
         echo "Found role with id $rid"
     fi
 
-    #attached policies
-    echo "finding attached policies"
-    local POLICIES=$(aws --profile $PROFILE --region $REGION iam list-attached-role-policies --role-name $n --query "AttachedPolicies[].PolicyArn" --output text)
+    local POLICIES=$(aws --profile $PROFILE --region $REGION iam list-attached-role-policies --role-name $n --query "AttachedPolicies[].PolicyArn" --output text 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        echo "failed to list attached role policies on role $n"
+        return 1
+    fi
     if [ ! -z "$POLICIES" ]; then
         for POLICY in $POLICIES; do
-            local ATTACHMENT_COUNT=$(aws --profile $PROFILE --region $REGION iam get-policy --policy-arn $POLICY --query "Policy.AttachmentCount" --output text)
-            echo "detaching $POLICY from $n"
-            aws --profile $PROFILE iam detach-role-policy --role-name $n --policy-arn $POLICY
+            local ATTACHMENT_COUNT=$(aws --profile $PROFILE --region $REGION iam get-policy --policy-arn $POLICY --query "Policy.AttachmentCount" --output text 2>/dev/null)
+            if [ $? -ne 0 ]; then
+                echo "failed to get policy attachment count on role $n"
+                return 1
+            fi
+            local foo=$(aws --profile $PROFILE --region $REGION iam detach-role-policy --role-name $n --policy-arn $POLICY 2>/dev/null)
+            if [ $? -ne 0 ]; then
+                echo "failed to detach policy $POLICY from role $n"
+                return 1
+            fi
             if [ 1 == $ATTACHMENT_COUNT ]; then
                 echo "Policy is only attached to $ATTACHMENT_COUNT roles, deleting it."
                 aws --profile $PROFILE iam delete-policy --policy-arn $POLICY
@@ -117,101 +176,169 @@ function deleteRole {
 
     #Inline policies
     echo "Finding inline policies"
-    local POLICIES=$(aws --profile $PROFILE iam list-role-policies --role-name $n --query "PolicyNames[]" --output text)
+    local POLICIES=$(aws --profile $PROFILE iam list-role-policies --role-name $n --query "PolicyNames[]" --output text 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        echo "Failed to list role policies on role $n"
+        return 1
+    fi
     if [ ! -z "$POLICIES" ]; then
         for POLICY in $POLICIES; do
-            aws --profile $PROFILE iam delete-role-policy --role-name $n --policy-name $POLICY
+            local foo=$(aws --profile $PROFILE --region $REGION iam delete-role-policy --role-name $n --policy-name $POLICY 2>/dev/null)
+            if [ $? -ne 0 ]; then
+                echo "failed to delete role policy $POLICY for role $n"
+                return 1
+            fi
         done
     else
      echo "Found no inline policies"
     fi
-
     echo "Deleting role $n"
-    aws --profile $PROFILE --region $REGION iam delete-role --role-name "$n"
-}
-
-function createPolicy {
-    echo "TODO THIS!"
+    local foo=$(aws --profile $PROFILE --region $REGION iam delete-role --role-name "$n" 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        echo "Failed to delete role $n"
+        return 1
+    fi
+    return 0
 }
 
 function createRole {
     if [ -z "$1" ]; then
-        echo "you must role name in first parameter"
-        return
+        echo "you must supply role name in first parameter"
+        return 1
     fi
     if [ -z "$2" ]; then
-        echo "you must service type in second parameter (ie rds.amazonaws.com or ec2.amazonaws.com etc.)"
-        echo "this is used to create the trust policy"
-        echo "you may also pass something like: \"AWS\": [\"arn:aws:iam::<AccountBId>:role/<AccountBRole>\",  \"arn:aws:iam:: <AccountCId>:role/<AccountCRole>\"] etc."
-        echo "TODO that last part is a lie, currently"
-        return
+        echo "you must trust policy in second parameter (see createTrustPolicy)"
+        return 1
     fi
     if roleExists "$1"; then
         echo "IAM role '$1' already exists."
-        return
+        return 0
     fi
-
-    echo "Creating IAM role $1"
+    local tags=$(getTagsRaw "$STACK")
     # Create the IAM role
     aws --profile $PROFILE --region $REGION iam create-role \
         --role-name "$1" \
-        --assume-role-policy-document "{
-            \"Version\": \"2012-10-17\",
-            \"Statement\": [
-                {
-                    \"Effect\": \"Allow\",
-                    \"Principal\": {
-                        \"Service\": \"$2\"
-                    },
-                    \"Action\": \"sts:AssumeRole\"
-                }
-            ]
-        }"
+        --tags "$tags" \
+        --assume-role-policy-document "$2"
+
+    if [ $? -eq 0 ]; then return 0; fi
+    return 1
+}
+
+########################################################################
+### INSTANCE PROFILES           ########################################
+########################################################################
+
+function isInstanceProfileExists {
+    if [ -z "$1" ]; then
+        echo "you must supply instance profile name in first parameter"
+        return 1
+    fi
+    local foo=$(aws --profile ${PROFILE} --region ${REGION} iam get-instance-profile --instance-profile-name "$1" --query "InstanceProfile.InstanceProfileId" --output text 2>/dev/null)
+    if [ $? -ne 0 ]; then return 1; fi
+    if [ -z "$foo" ]; then return 1; fi
+    return 0
 }
 
 function deleteInstanceProfile {
     if [ -z "$1" ]; then
         echo "you must instance profile name in first parameter"
-        return
+        return 1
     fi
+
+    if ! isInstanceProfileExists "$1"; then
+        echo "instance profile $1 does not exist. No need to delete it"
+        return 0
+    fi
+
     local foo=$(aws --profile $PROFILE --region $REGION iam delete-instance-profile --instance-profile-name $1 2>/dev/null)
     if [ $? -eq 0 ]; then
         echo "deleted instance profile $1"
+        return 0
     else
         echo "problem deleting instance profile $1"
+        return 1
     fi
+}
+
+# Creates a generic role which will be correct for almost all EC2 instance profiles
+# The user can add policies to this role using other functions etc.
+function createAndAttachEc2InstanceProfileRole {
+    if [ -z "$1" ]; then
+        echo "you must instance profile name in first parameter"
+        return 1
+    fi
+    if ! isInstanceProfileExists "$1"; then
+        echo "instance profile $1 does not exist. You must create it first"
+        return 1
+    fi
+    local ROLENAME="$1-role"
+    if ! roleExists "$ROLENAME"; then
+        echo "Role does not exist for instance profile with name $1... creating"
+        local tp=$(createTrustPolicy "ec2.amazonaws.com")
+        createRole "$ROLENAME" "$tp"
+        if [ $? -eq 0 ]; then
+            echo "Failed to create role $ROLENAME"
+            return 1
+        fi
+        echo "Role $ROLENAME created"
+    fi
+    echo "Attaching standard AWS managed policies to EC2 Instance role"
+    attachManagedPolicyToRole "$ROLENAME" "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+    if [ $? -ne 0 ]; then
+        echo "Failed to add AmazonSSMManagedInstanceCore policy to role $ROLENAME"
+    fi
+
+    attachManagedPolicyToRole "$ROLENAME" "arn:aws:iam::aws:policy/AmazonSSMPatchAssociation"
+    if [ $? -ne 0 ]; then
+        echo "Failed to add arn:aws:iam::aws:policy/AmazonSSMPatchAssociation policy to role $ROLENAME"
+    fi
+    attachManagedPolicyToRole "$ROLENAME" "arn:aws:iam::aws:policy/AmazonSSMPatchAssociation"
+    if [ $? -ne 0 ]; then
+        echo "Failed to add arn:aws:iam::aws:policy/AmazonElasticFileSystemReadOnlyAccess policy to role $ROLENAME"
+    fi
+    echo "attaching role to instance profile $1"
+    local foo=$(aws --profile $PROFILE --region $REGION iam add-role-to-instance-profile --instance-profile-name "$1" --role-name "$1" 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        echo "Failed to attache role $ROLENAME to instance profile $1"
+        return 1
+    fi
+    return 0
 }
 
 # Creates an instance profile and adds a role to it
 # You can create the role first (it must have the same name)
 # or this function will create a role and leave it blank
 # You can then populate the role later using the above functions
-function createInstanceProfile {
+function createEc2InstanceProfile {
     if [ -z "$1" ]; then
         echo "you must instance profile name in first parameter"
         return
     fi
-    # if the instance profile exists just return its id
-    local foo=$(aws --profile $PROFILE --region $REGION iam get-instance-profile --instance-profile-name "$1" --query "InstanceProfile.InstanceProfileId" --output text 2>/dev/null)
-    if [ ! -z "$foo" ]; then
-        echo "$foo"
-        return
+
+    if isInstanceProfileExists $1; then
+        echo "instance profile $1 already exists"
+        return 0
     fi
-    # create it
-    local ipid=$(aws --profile $PROFILE --region $REGION iam create-instance-profile --instance-profile-name "$1" --query "InstanceProfile.InstanceProfileId" --output text)
-    # Now check if the role on which it is based exists
-    local rid=$(aws --profile $PROFILE --region $REGION iam get-role --role-name "$1" --query "Role.RoleId" --output text 2>/dev/null)
-    if [ -z "$rid" ]; then
-        #create the role
-        local rid=$(aws --profile $PROFILE --region $REGION iam create-role --role-name "$1" --assume-role-policy-document "$trust" --query 'Role.Arn' --output text)
-        # attach ssm policies
-        aws --profile $PROFILE --region $REGION iam attach-role-policy --role-name "$1" --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-        aws --profile $PROFILE --region $REGION iam attach-role-policy --role-name "$1" --policy-arn arn:aws:iam::aws:policy/AmazonSSMPatchAssociation
-        aws --profile $PROFILE --region $REGION iam attach-role-policy --role-name "$1" --policy-arn arn:aws:iam::aws:policy/AmazonElasticFileSystemReadOnlyAccess
+
+    local ipid=$(aws --profile $PROFILE --region $REGION iam create-instance-profile --instance-profile-name "$1" --query "InstanceProfile.InstanceProfileId" --output text 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        echo "error creating instance profile $1"
+        return 1
     fi
-    # attach role to instance profile
-    aws --profile $PROFILE --region $REGION iam add-role-to-instance-profile --instance-profile-name "$1" --role-name "$1"
-    echo "$ipid"
+    if [ -z "$ipid" ]; then
+        echo "problem creating instance profile $1"
+        return 1
+    fi
+
+    echo "checking for role to associate with this instance profile.."
+
+    createAndAttachEc2InstanceProfileRole
+    if [ $? -ne 0 ]; then
+        echo "Failed to attache role to instance profile $1"
+        return 1
+    fi
+    return 0
 }
 
 

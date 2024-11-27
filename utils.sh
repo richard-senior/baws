@@ -1,6 +1,45 @@
 #!/bin/bash
 
-### INTERNETS
+#############
+### LOGGING
+#############
+
+function bawsWarn {
+  RED="\e[31m"
+  ENDCOLOR="\e[0m"
+  if [ -z "$1" ]; then
+     echo "must supply message in first parameter"
+     return 1
+  fi
+  echo -e "$RED$1$ENDCOLOR"
+}
+
+function bawsLog {
+  if [ -z "$1" ]; then
+     echo "must supply message in first parameter"
+     return 1
+  fi
+   echo ""
+   echo "------- BAWS --------"
+   echo " $1"
+   echo "---------------------"
+   echo ""
+}
+
+#############
+### AWS
+#############
+
+function isCanConnect {
+    local foo=$(aws --profile $PROFILE --region $REGION sts get-caller-identity 2>/dev/null | grep "UserId")
+    if [ $? -ne 0 ]; then return 1; fi
+    if [ -z "$foo" ]; then return 1; fi
+    return 0
+}
+
+#############
+### INTERNET
+#############
 
 function httpServerExists {
   if [ -z "$1" ]; then
@@ -23,30 +62,51 @@ function getExternalIP {
   echo "$ip"
 }
 
-function isIpValid {
+function isValidCidrRange {
   if [ -z "$1" ]; then
-     echo "must supply a ip to check, in the first parameter"
+     echo "must supply a cidr range in the first parameter"
      return 1
   fi
-    local  ip=$1
-    local  stat=1
+  # Parse "a.b.c.d/n" into five separate variables
+  IFS="./" read -r ip1 ip2 ip3 ip4 N <<< "$1"
+  # Convert IP address from quad notation to integer
+  ip=$(($ip1 * 256 ** 3 + $ip2 * 256 ** 2 + $ip3 * 256 + $ip4))
+  # Remove upper bits and check that all $N lower bits are 0
+  if [ $(($ip % 2**(32-$N))) = 0 ]; then
+    return 0 # CIDR OK!
+  else
+    return 1 # CIDR NOT OK!
+  fi
+}
 
-    if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-        OIFS=$IFS
-        IFS='.'
-        ip=($ip)
-        IFS=$OIFS
-        [[ ${ip[0]} -le 255 && ${ip[1]} -le 255 \
-            && ${ip[2]} -le 255 && ${ip[3]} -le 255 ]]
-        stat=$?
-    fi
-    return $stat
+function isIpValid {
+  if [ -z "$1" ]; then
+    echo "must supply a ip to check, in the first parameter"
+    return 1
+  fi
+  local  ip=$1
+  local  stat=1
+
+  if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+      OIFS=$IFS
+      IFS='.'
+      ip=($ip)
+      IFS=$OIFS
+      [[ ${ip[0]} -le 255 && ${ip[1]} -le 255 \
+          && ${ip[2]} -le 255 && ${ip[3]} -le 255 ]]
+      stat=$?
+  fi
+  return $stat
 }
 
 function getDate {
     date=$(wget -qSO- --max-redirect=0 google.com 2>&1 | grep Date: | cut -d' ' -f5-8)
     echo "$date"
 }
+
+#############
+### OS
+#############
 
 function isServiceRunning {
     if [ -z "$1" ]; then
@@ -98,6 +158,13 @@ function isApplicationInstalled() {
     fi
 }
 
+function isRoot {
+  if [[ $EUID -ne 0 ]]; then
+    echo "This script must be run as root"
+    exit 1
+  fi
+}
+
 #### OS
 
 function isWsl {
@@ -109,6 +176,10 @@ function isWsl {
   fi
 }
 
+#############
+### DOCKER
+#############
+
 function isDocker {
   if [ -f /.dockerenv ]; then
       return 0
@@ -116,28 +187,6 @@ function isDocker {
       return 1
   fi
 }
-
-######### String manipulation
-
-# very simple and flaky string replacement
-# echo's back the replaced string
-#$1 : target string
-#$2 : search term
-#$3 : replacement
-function stringReplace() {
-    printf "%s" "${1/"$2"/$3}"
-}
-
-function isNumeric {
-  re='^[0-9]+$'
-  if [[ $1 =~ $re ]] ; then
-    return 0
-  else
-    return 1
-  fi
-}
-
-################ docker
 
 function isDockerContainerIsRunning {
     if [ -z "$1" ]; then
@@ -212,4 +261,27 @@ function optionallyRemoveDockerContainer {
             docker rm $1
       fi
     fi
+}
+
+
+#############
+### STRINGS
+#############
+
+# very simple and flaky string replacement
+# echo's back the replaced string
+#$1 : target string
+#$2 : search term
+#$3 : replacement
+function stringReplace() {
+    printf "%s" "${1/"$2"/$3}"
+}
+
+function isNumeric {
+  re='^[0-9]+$'
+  if [[ $1 =~ $re ]] ; then
+    return 0
+  else
+    return 1
+  fi
 }

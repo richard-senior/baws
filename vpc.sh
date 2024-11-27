@@ -1,10 +1,18 @@
 #!/bin/bash
 
-source ./tags.sh
-
 ########################################################################
 ### VPC           ######################################################
 ########################################################################
+
+function getVpcCidrRange {
+  local vpcid=$(getVpcId)
+  if [ $? -ne 0 ]; then return 1; fi
+  local cbr=$(aws --profile $PROFILE --region $REGION ec2 describe-vpcs --vpc-ids $vpcid --query "Vpcs[0].CidrBlock" --output text 2>/dev/null)
+  if [ $? -ne 0 ]; then return 1; fi
+  if [ -z "$cbr" ]; then return 1; fi
+  echo "$cbr"
+  return 0
+}
 
 function getVpcId {
     if [ ! -z "$VPCID" ]; then
@@ -54,17 +62,35 @@ function getCommaDelimitedSubnetsForPlatform {
 
 function getSpaceDelimitedSubnetsForPlatform {
     local scheme="private"
+    if [ ! -z "$1" ]; then local scheme="$1"; fi
     local vpcid=$(getVpcId)
+    if [ $? -ne 0 ]; then return 1; fi
+    if [ -z "$vpcid" ]; then return 1; fi
     local sn=$(aws --profile $PROFILE --region $REGION ec2 describe-subnets --filters Name=vpc-id,Values=$vpcid "Name=tag:scheme,Values=$scheme" --query "Subnets[].SubnetId" --output text)
+    if [ $? -ne 0 ]; then return 1; fi
+    if [ -z "$sn" ]; then return 1; fi
     local ret=""
     for i in $sn; do
         ret="$ret$i "
     done
     echo "$ret"
+    return 0
+}
+
+function getSubnet {
+  # gets the first subnet for the vpc for the scheme in $1
+    local scheme="private"
+    if [ ! -z "$1" ]; then local scheme="$1"; fi
+    local vpcid=$(getVpcId)
+    # aws ec2 describe-subnets --filters Name=vpc-id,Values=vpc-0099b918d2a911701 --region us-east-2 --query "Subnets[].SubnetId" --output text
+    local sn=$(aws --profile $PROFILE --region $REGION ec2 describe-subnets --filters Name=vpc-id,Values=$vpcid "Name=tag:scheme,Values=$scheme" --query "Subnets[0].SubnetId" --output text 2>/dev/null)
+    if [ $? -ne 0 ]; then return 1; fi
+    echo "$sn"
 }
 
 function getSubnetsForPlatform {
     local scheme="private"
+    if [ ! -z "$1" ]; then local scheme="$1"; fi
     local vpcid=$(getVpcId)
     # aws ec2 describe-subnets --filters Name=vpc-id,Values=vpc-0099b918d2a911701 --region us-east-2 --query "Subnets[].SubnetId" --output text
     local sn=$(aws --profile $PROFILE --region $REGION ec2 describe-subnets --filters Name=vpc-id,Values=$vpcid "Name=tag:scheme,Values=$scheme" --query "Subnets[].SubnetId" --output text)

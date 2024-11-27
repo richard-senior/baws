@@ -1,10 +1,19 @@
 #!/bin/bash
 
-source ./conf.sh
-
 ########################################################################
 ### SG             #####################################################
 ########################################################################
+
+function isSecurityGroupId {
+    if [ -z "$1" ]; then
+        echo "must supply string to test in first paramter"
+        return 1
+    fi
+    if [[ $1 =~ ^sg-[a-fA-F0-9]{17}$ ]]; then
+        return 0
+    fi
+    return 1
+}
 
 # Find dependencies on a security group. Useful for debuging issues creating or
 # destroying sg's
@@ -30,12 +39,15 @@ function isSgExists {
         echo "must supply security group name in first paramter"
         return
     fi
-    local sg_id=$(aws --profile $PROFILE --region $REGION ec2 describe-security-groups \
-        --filters "Name=group-name,Values=$1" "Name=vpc-id,Values=$VPCID" \
+    local vpcid=$(getVpcId)
+    local sgid=$(aws --profile $PROFILE --region $REGION ec2 describe-security-groups \
+        --filters "Name=group-name,Values=$1" "Name=vpc-id,Values=$vpcid" \
         --query "SecurityGroups[0].GroupId" \
-        --output text)
-
-    if [ "$sg_id" != "None" ] && [ -n "$sg_id" ]; then
+        --output text 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+    if [ "$sgid" != "None" ] && [ -n "$sgid" ]; then
         return 0
     else
         return 1
@@ -47,19 +59,90 @@ function getSgId {
         echo "must supply security group name in first paramter"
         return
     fi
-    local foo=$(aws --profile $PROFILE --region $REGION ec2 describe-security-groups --filters "Name=vpc-id,Values=$VPCID" "Name=group-name,Values=$1" --output json 2>/dev/null)
-    if [ ! -z "$foo" ]; then
-        local ret=$(echo "$foo" | jq -r ".SecurityGroups[0].GroupId")
-        if [ ! -z "$ret" ] && [ "$ret" != "null" ]; then
-            echo "$ret"
-            return
+    local vpcid=$(getVpcId)
+    #echo "aws --profile $PROFILE --region $REGION ec2 describe-security-groups --filters \"Name=vpc-id,Values=$vpcid\" \"Name=group-name,Values=$1\" --query \"SecurityGroups[0].GroupId\" --output text 2>/dev/null"
+    local foo=$(aws --profile $PROFILE --region $REGION ec2 describe-security-groups --filters "Name=vpc-id,Values=$vpcid" "Name=group-name,Values=$1" --query "SecurityGroups[0].GroupId" --output text 2>/dev/null)
+    if [ -z "$foo" ]; then return 1; fi
+    if [ "$foo" = "None" ]; then return 1; fi
+    if [ "$foo" = "none" ]; then return 1; fi
+    echo "$foo"
+}
+
+function isIngressRuleExists {
+    if [ -z "$1" ]; then
+        echo "must supply the security group id or name in the first parameter"
+        return 1
+    fi
+    if [ -z "$2" ]; then
+        echo "must supply protocol (ie tcp) in the second parameter"
+        return 1
+    fi
+    if [ -z "$3" ]; then
+        echo "must supply port number or port range in the third parameter (ie 443 or 1-65535)"
+        return 1
+    fi
+    if [ -z "$4" ]; then
+        echo "must supply source in fourth parameter. (ie 203.0.113.0/24 or sg-1a2b3c4d etc.)"
+        return 1
+    fi
+
+    local sgid=$1
+    if ! isSecurityGroupId "$1"; then
+        local sgid=$(getSgId "$1")
+        if [ -z "$sgid" ]; then
+            bawsWarn "Call to get sgid returned nothing $sgid"
+            return 1
         fi
     fi
-    echo ""
+    local foo=$(aws --profile "$PROFILE" --region "$REGION" ec2 describe-security-group-rules --filters Name="group-id",Values="$sgid" --query  --output json 2>/dev/null)
+    # TODO this!
+    return 1
+}
+
+function addIngressRule {
+    if [ -z "$1" ]; then
+        echo "must supply the security group id or name in the first parameter"
+        return 1
+    fi
+    if [ -z "$2" ]; then
+        echo "must supply protocol (ie tcp) in the second parameter"
+        return 1
+    fi
+    if [ -z "$3" ]; then
+        echo "must supply port number or port range in the third parameter (ie 443 or 1-65535)"
+        return 1
+    fi
+    if [ -z "$4" ]; then
+        echo "must supply source in fourth parameter. (ie 203.0.113.0/24 or sg-1a2b3c4d etc.)"
+        return 1
+    fi
+
+    if isIngressRuleExists "$1" "$2" "$3" "$4"; then return 0; fi
+
+    local sgid=$1
+    # Check if the input is a Security Group ID (sg-xxxxxxxxxxxxxxxxx)
+    if ! isSecurityGroupId "$1"; then
+        sgid="$(getSgId $1)"
+        if [ -z "$sgid" ]; then
+            echo "Error: Unable to find Security Group with name '$1'"
+            return 1
+        fi
+    fi
+    local src=""
+    # work out what we've been sent
+    if isSecurityGroupId $4; then
+        local src="--source-group $4"
+    elif isValidCidrRange $4; then
+        local src="--cidr $4"
+    else
+        echo "must supply a valid source in the form or a security group id or cidr range"
+        return 1
+    fi
+    local foo=$(aws --profile $PROFILE --region $REGION ec2 authorize-security-group-ingress --group-id "$sgid" --protocol $2 --port $3 $src --query "SecurityGroupRules[0].SecurityGroupRuleId" --output text 2>/dev/null)
 }
 
 # Removes all ingress rules from the named security group
-function removeSgRules {
+function revokeSgRules {
     #if you just want to see a list of security group rule owners then set this flag to true
     if [ -z "$1" ]; then
         echo "must supply the security group id or name in the first parameter"
@@ -68,19 +151,15 @@ function removeSgRules {
 
     local sgid=$1
     # Check if the input is a Security Group ID (sg-xxxxxxxxxxxxxxxxx)
-    if [[ $1 =~ ^sg-[a-fA-F0-9]{17}$ ]]; then
-        echo "Was passed an SGID not an SGName.. proceeding with $1"
-    else
-        echo "Was passed an SG Name, not an id looking up ID for $1"
+    if [ ! [ $1 =~ ^sg-[a-fA-F0-9]{17}$ ]]; then
         sgid="$(getSgId $1)"
-        if [ "$sgid" == "None" ] || [ -z "$sgid" ]; then
+        if [ -z "$sgid" ]; then
             echo "Error: Unable to find Security Group with name '$1'"
             return 1
         else
             echo "$1 has ID $sgid"
         fi
     fi
-    echo "removing inbound rules for $sgid"
 
     local foo=$(aws --profile "$PROFILE" --region "$REGION" ec2 describe-security-group-rules --filters Name="group-id",Values="$sgid" --query "SecurityGroupRules[?IsEgress == \`false\`].[SecurityGroupRuleId]" --output text)
     for id in $foo; do
@@ -92,6 +171,40 @@ function removeSgRules {
             echo "$res"
         fi
     done
+}
+
+function createSg {
+    if [ -z "$1" ]; then
+        echo "must supply the security group name in the first parameter"
+        return 1
+    fi
+    if isSgExists "$1"; then
+        echo "SG $1 already exists"
+        return 0
+    fi
+    local desc=""
+    if [ ! -z "$PROJECT_DESCRIPTION" ]; then
+        local desc=" --description '$PROJECT_DESCRIPTION' "
+    fi
+
+    echo "Creating security group with name $1"
+    local vpcid=$(getVpcId)
+    local foo=$(aws --profile $PROFILE --region $REGION ec2 create-security-group $desc --vpc-id $vpcid --group-name $1 --tag-specification $(getTagSpecifications $1 'security-group') --query 'GroupId' --output text 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        bawsWarn "Failed to create security group $1 - Non-zero return"
+        return 1
+    fi
+    if [ -z "$foo" ]; then
+        echo "aws --profile $PROFILE --region $REGION ec2 create-security-group $desc --vpc-id $vpcid --group-name $1 --tag-specification $(getTagSpecifications $1 'security-group') --query 'GroupId' --output text"
+        bawsWarn "Failed to create security group $1 - empty response"
+        return 1
+    fi
+    if ! isSecurityGroupId "$foo"; then
+        echo "Failed to create Security Group $1 - response was not a security group id [$foo]"
+        return 1
+    fi
+    echo "Security group $1 created with id $foo"
+    return 0
 }
 
 function deleteSg {
@@ -108,8 +221,8 @@ function deleteSg {
     local id=$(getSgId $1)
 
     if [ -z "$id" ]; then return; fi
-        removeSgRules "$id"
-        aws --profile "$PROFILE" --region "$REGION" ec2 delete-security-group --group-id "$id"
+        # removeSgRules "$id"
+        local foo=$(aws --profile "$PROFILE" --region "$REGION" ec2 delete-security-group --group-id "$id" 2>/dev/null)
         if [ $? -eq 0 ]; then
             echo "Security group '$1' deleted successfully."
         else
