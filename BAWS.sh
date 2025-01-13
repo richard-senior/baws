@@ -23,6 +23,7 @@
 ## *    etc.
 ##
 ## All BAWS function will return exit code 1 if there was a problem
+## TODO Method Caching : https://github.com/dimo414/bash-cache/blob/master/README.md
 ############################################################
 
 # by default we disable aws response paging as this
@@ -56,13 +57,18 @@ source $BAWS_DIR/conf.sh
 # Now source all the library files
 source $BAWS_DIR/account.sh
 source $BAWS_DIR/ec2.sh
+source $BAWS_DIR/ami.sh
 source $BAWS_DIR/efs.sh
+source $BAWS_DIR/eks.sh
 source $BAWS_DIR/iam.sh
 source $BAWS_DIR/loadbalancer.sh
+source $BAWS_DIR/rdb.sh
 source $BAWS_DIR/roles.sh
+source $BAWS_DIR/s3.sh
 source $BAWS_DIR/securitygroups.sh
 source $BAWS_DIR/ssm.sh
 source $BAWS_DIR/tags.sh
+source $BAWS_DIR/utils.sh
 source $BAWS_DIR/vpc.sh
 
 #function show {

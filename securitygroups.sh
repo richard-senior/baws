@@ -117,7 +117,7 @@ function addIngressRule {
         return 1
     fi
 
-    if isIngressRuleExists "$1" "$2" "$3" "$4"; then return 0; fi
+    # if isIngressRuleExists "$1" "$2" "$3" "$4"; then return 0; fi
 
     local sgid=$1
     # Check if the input is a Security Group ID (sg-xxxxxxxxxxxxxxxxx)
@@ -182,20 +182,21 @@ function createSg {
         echo "SG $1 already exists"
         return 0
     fi
-    local desc=""
-    if [ ! -z "$PROJECT_DESCRIPTION" ]; then
-        local desc=" --description '$PROJECT_DESCRIPTION' "
+    local desc="Security Group for $1"
+    if [ -z "$PROJECT_DESCRIPTION" ]; then
+        local desc="$PROJECT_DESCRIPTION"
     fi
 
     echo "Creating security group with name $1"
     local vpcid=$(getVpcId)
-    local foo=$(aws --profile $PROFILE --region $REGION ec2 create-security-group $desc --vpc-id $vpcid --group-name $1 --tag-specification $(getTagSpecifications $1 'security-group') --query 'GroupId' --output text 2>/dev/null)
+    local tagSpecs="$(getTagSpecificationsNoQuotes $1 'security-group')"
+    local foo=$(aws --profile $PROFILE --region $REGION ec2 create-security-group --description "$desc" --vpc-id $vpcid --group-name $1 --tag-specification $tagSpecs --query 'GroupId' --output text 2>/dev/null)
     if [ $? -ne 0 ]; then
         bawsWarn "Failed to create security group $1 - Non-zero return"
         return 1
     fi
     if [ -z "$foo" ]; then
-        echo "aws --profile $PROFILE --region $REGION ec2 create-security-group $desc --vpc-id $vpcid --group-name $1 --tag-specification $(getTagSpecifications $1 'security-group') --query 'GroupId' --output text"
+        echo "aws --profile $PROFILE --region $REGION ec2 create-security-group --description \"$desc\" --vpc-id $vpcid --group-name $1 --tag-specification $tagSpecs --query 'GroupId' --output text 2>/dev/null"
         bawsWarn "Failed to create security group $1 - empty response"
         return 1
     fi

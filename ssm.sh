@@ -4,6 +4,24 @@
 ### SSM            #####################################################
 ########################################################################
 
+function waitForSSMConnection {
+    if [ -z "$1" ]; then
+        echo "you must provide the instance name or id in the first parameter"
+        return 1
+    fi
+    local iid=$(getInstanceId "$1")
+    if [ -z "$iid" ]; then
+        echo "failed to get instance id for instance with name $1"
+        return 1
+    fi
+    echo "Waiting for SSM to become available on $iid"
+    timeout 300s bash <<EOF
+        until aws --profile $PROFILE --region $REGION ssm get-connection-status --target $iid --query "Status" --output text; do
+            sleep 10
+        done
+EOF
+}
+
 function sendSMALLFileViaSsm {
     if [ -z "$1" ]; then
         echo "you must send instanceId the first parameter"
@@ -95,15 +113,12 @@ function sendCommand {
 }
 
 function ssmToStack {
-  local id=$(aws --profile $PROFILE --region $REGION ec2 describe-instances --filters "Name=tag:platform-name, Values=$PLATFORM" "Name=tag:stack-name, Values=$STACK" "Name=tag:environment-name, Values=$environment" "Name=instance-state-name,Values=running" --query "Reservations[].Instances[].InstanceId" --output text)
-  local fid=""
-  for i in $id; do
-    if [ ! -z $i ]; then
-      local fid=$i
-      break
+    if [ -z "$1" ]; then
+        echo "must pass instance name in the first parameter"
+        return 1
     fi
-  done
-  aws --profile $PROFILE --region $REGION ssm  start-session  --target $fid
+    local iid=$(getInstanceId "$1")
+    aws --profile $PROFILE --region $REGION ssm start-session --target $iid
 }
 
 

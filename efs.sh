@@ -1,7 +1,5 @@
 #!/bin/bash
 
-source $BAWS_DIR/securitygroups.sh
-
 ########################################################################
 ### EFS            #####################################################
 ########################################################################
@@ -92,18 +90,31 @@ function checkEfsFileSystemExists {
     fi
 }
 
+function mountPointsExists {
+    if [ -z "$1" ]; then
+        echo "you must suplly the filesystem name in first parameter"
+        return
+    fi
+    local fsid=$(getEfsFileSystemId "$1")
+    if [ -z "$fsid" ]; then
+        echo "Failed to get ID for filesystem $1"
+        return 1
+    fi
+    local foo=$(aws --profile $PROFILE --region $REGION efs describe-mount-targets --file-system-id "$fsid" --query "MountTargets[].MountTargetId" --output text 2>/dev/null)
+    if [ $? -eq 0 ]; then return 1; fi
+    if [ -z "$foo" ]; then return 1; fi
+    return 0
+}
+
 function createEfsMountpoints {
     if [ -z "$1" ]; then
-        echo "you must filesystem name in first parameter"
+        echo "you must suplly the filesystem name in first parameter"
         return
     fi
-    if [ -z "$2" ]; then
-        echo "you must supply the security group name for this filesystem in the second parameter"
-        return
-    fi
-    local fsid=$(getEfsFileSystemId $1)
+    local sgname="$(getSgName $1)"
+    local sgid=$(getSgId "$sgname")
+    local fsid=$(getEfsFileSystemId "$1")
     local sns=$(getSpaceDelimitedSubnetsForPlatform)
-    local sgid=$(getSgId $2)
     # Create mount targets for each subnet
     echo "About to create mountpoints for EFS filesystem on vpc subnets"
     for subnet in $sns; do
@@ -141,50 +152,69 @@ function createEfsMountpoints {
 }
 
 function createEfsFileSystem {
-    if checkEfsFileSystemExists; then
-        echo "EFS File System '$EFS_NAME' already exists."
-        return 0
-    fi
-
-    local creation_token=$(uuidgen)
-    echo "About to create EFS filesystem '$EFS_NAME'"
-    local fsid=$(aws --profile $PROFILE --region $REGION efs create-file-system \
-        --creation-token "$creation_token" \
-        --performance-mode generalPurpose \
-        --throughput-mode bursting \
-        --encrypted \
-        --tags Key=Name,Value="$EFS_NAME" Key=platform-name,Value=$PLATFORM_NAME Key=stack-name,Value=$STACK_NAME \
-        --query "FileSystemId" \
-        --output text
-    )
-
-    if [ $? -eq 0 ]; then
-        echo "EFS File System '$EFS_NAME' created successfully."
-    else
-        echo "Failed to create EFS File System '$EFS_NAME'."
+    if [ -z "$1" ]; then
+        echo "must pass filesystem name in first parameter"
         return 1
     fi
 
-    local max_attempts=30
-    local attempt=0
-    echo "Waiting for EFS File System to become available..."
-    while [ $attempt -lt $max_attempts ]; do
-        status=$(aws --profile $PROFILE --region $REGION efs describe-file-systems \
-            --file-system-id "$fsid" \
-            --query "FileSystems[0].LifeCycleState" \
-            --output text)
+    if [ -z "$2" ]; then
+        echo "Optional target sg name not passed in second parameter"
+        echo "Will not add ec2 connection to inbound rules of EFS sg"
+    fi
 
-        if [ "$status" == "available" ]; then
-            echo "EFS File System '$EFS_NAME' is now available."
-            break
+    if ! checkEfsFileSystemExists "$1"; then
+        local creation_token=$(uuidgen)
+        echo "About to create EFS filesystem '$1'"
+        local fsid=$(aws --profile $PROFILE --region $REGION efs create-file-system \
+            --creation-token "$creation_token" \
+            --performance-mode generalPurpose \
+            --throughput-mode bursting \
+            --encrypted \
+            --tags Key=Name,Value="$1" Key=platform-name,Value=$PLATFORM_NAME Key=stack-name,Value=$STACK_NAME \
+            --query "FileSystemId" \
+            --output text
+        )
+
+        if [ $? -eq 0 ]; then
+            echo "EFS File System '$1' created successfully."
+        else
+            echo "Failed to create EFS File System '$1'."
+            return 1
         fi
 
-        echo "EFS status: $status. Waiting..."
-        sleep 10
-        ((attempt++))
-    done
+        local max_attempts=30
+        local attempt=0
+        echo "Waiting for EFS File System to become available..."
+        while [ $attempt -lt $max_attempts ]; do
+            status=$(aws --profile $PROFILE --region $REGION efs describe-file-systems \
+                --file-system-id "$fsid" \
+                --query "FileSystems[0].LifeCycleState" \
+                --output text)
 
-    createEfsMountpoints
+            if [ "$status" == "available" ]; then
+                echo "EFS File System '$1' is now available."
+                break
+            fi
+
+            echo "EFS status: $status. Waiting..."
+            sleep 10
+            ((attempt++))
+        done
+    else
+        echo "EFS File System '$1' already exists."
+    fi
+
+    local sgname="$1-sg"
+
+    createSg "$sgname"
+    if [ -n "$2" ]; then
+        # if we know where we're going to mount this EFS
+        # then add an ingress rule to the EFS SG
+        local sgid=$(getSgId "$2")
+        addIngressRule "$sgname" "tcp" "2049" "$2"
+    fi
+
+    createEfsMountpoints "$1"
 }
 
 function destroyEfsMounts {

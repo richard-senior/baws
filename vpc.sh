@@ -32,20 +32,26 @@ function getVpcId {
     return 1
 }
 
+########################################################################
+### SUBNETS          ###################################################
+########################################################################
+
+# returns the 'chosen' subnet from all the private subnet ID's
+# essentially gets the private subnets then returns the first on in the list
 function getPrivateSubnetId {
-    local scheme="private"
     if [ -z "$1" ]; then
-        echo "must supply index (which subnet) in first parmeter"
-        echo "Generally you'll have many subnets on a vpc"
+        echo "you must supply vpcId in the first parameter"
         return
     fi
-    local vpcid=$(getVpcId)
-    local sn=$(aws --profile $PROFILE --region $REGION ec2 describe-subnets --filters Name=vpc-id,Values=$vpcid "Name=tag:scheme,Values=$scheme" --query "Subnets[].SubnetId" --output text)
-    ret=()
-    for i in $sn; do
-        ret+=("$i")
+    local vpcid="$1"
+    local snids=$(getPrivateSubnetsForVpc "$vpcid")
+    if [ -z "$snids" ]; then
+        return 1
+    fi
+    for s in $snids; do
+      echo "$s"
+      return 0
     done
-    echo "${ret[$1]}"
 }
 
 function getCommaDelimitedSubnetsForPlatform {
@@ -64,6 +70,7 @@ function getSpaceDelimitedSubnetsForPlatform {
     local scheme="private"
     if [ ! -z "$1" ]; then local scheme="$1"; fi
     local vpcid=$(getVpcId)
+
     if [ $? -ne 0 ]; then return 1; fi
     if [ -z "$vpcid" ]; then return 1; fi
     local sn=$(aws --profile $PROFILE --region $REGION ec2 describe-subnets --filters Name=vpc-id,Values=$vpcid "Name=tag:scheme,Values=$scheme" --query "Subnets[].SubnetId" --output text)
@@ -88,12 +95,129 @@ function getSubnet {
     echo "$sn"
 }
 
-function getSubnetsForPlatform {
+# Returns the id of the internet gateway for the given vpcid
+function getInternetGatewayIdForVpc {
+    if [ -z "$1" ]; then
+        echo "you must supply vpcId in the first parameter"
+        return
+    fi
+    local vpcid="$1"
+
+    local IGW_ID=$(aws --profile $PROFILE --region $REGION  ec2 describe-internet-gateways \
+      --filters Name=attachment.vpc-id,Values=${vpcid} \
+      --query "InternetGateways[0].InternetGatewayId" --output text 2>/dev/null)
+
+    if [ -z "$IGW_ID" ]; then
+        echo "no internet gateway found for vpcId $vpcid" >&2
+        return 1
+    fi
+
+    echo "$IGW_ID"
+    return 0
+}
+
+# Gets the public subnets for the given vpc by checking
+# the route table for any subnets associated with the internet gateway
+function getPublicSubnetsForVpc {
+    if [ -z "$1" ]; then
+        echo "you must supply vpcId in the first parameter"
+        return
+    fi
+    # TODO weed out hybrid subnets somehow?
+    local vpcid="$1"
+    local igid=$(getInternetGatewayIdForVpc "$vpcid")
+    local PUBLIC_SUBNETS=$(aws --profile $PROFILE --region $REGION  ec2 describe-route-tables \
+      --query  'RouteTables[*].Associations[].SubnetId' \
+      --filters "Name=vpc-id,Values=${vpcid}" "Name=route.gateway-id,Values=${igid}" \
+      --output text)
+
+    # weed out hybrid networks
+
+    echo "$PUBLIC_SUBNETS"
+}
+
+# gets the private subnets for the vpc by first
+# getting the public subnets, then getting all subnets
+# and excluding the public ones
+function getPrivateSubnetsForVpc {
+    if [ -z "$1" ]; then
+        echo "you must supply vpcId in the first parameter"
+        return
+    fi
+    local vpcid="$1"
+    local psnids=$(getPublicSubnetsForVpc $vpcid)
+    local snids="$(getAllSubnetsForVpc $vpcid)"
+    # now remove the public snids from snids
+    for i in $snids; do
+      if [[ ${psnids} != *"$i"* ]]; then
+        echo "$i"
+      fi
+    done
+}
+
+# returns the private subnets ensuring there are no control characters
+# such as line breaks etc. Returns a space delimited list
+function getSpaceDelimitedPrivateSubnetsForPlatform {
+  local vpcid=$(getVpcId)
+  local snids=$(getPrivateSubnetsForVpc "$vpcid")
+    if [ $? -ne 0 ]; then return 1; fi
+    if [ -z "$snids" ]; then return 1; fi
+    local ret=""
+    for i in $snids; do
+        ret="$ret$i "
+    done
+    echo "$ret"
+    return 0
+}
+
+function getAllSubnetsForVpc {
+    if [ -z "$1" ]; then
+        echo "you must supply vpcId in the first parameter"
+        return
+    fi
+    local vpcid="$1"
+    local snids=$(aws --profile $PROFILE --region $REGION ec2 describe-subnets \
+      --filter Name=vpc-id,Values=${vpcid} \
+      --query 'Subnets[].SubnetId' --output text 2>/dev/null)
+
+    if [ $? -ne 0 ]; then
+      echo "failed to get subnets for vpcId $vpcid" >&2
+      return 1
+    fi
+    if [ -z "$snids" ]; then
+      echo "no subnets found for vpcId $vpcid" >&2
+      return 1
+    fi
+    # TODO weed out hybrid networks
+    echo "$snids"
+    return 0
+}
+
+function getSubnetsForVpcId {
+    if [ -z "$1" ]; then
+        echo "you must supply vpcId in the first parameter"
+        return
+    fi
+    local vpcid="$1"
+
+    local query="\"Subnets[].SubnetId\""
     local scheme="private"
-    if [ ! -z "$1" ]; then local scheme="$1"; fi
-    local vpcid=$(getVpcId)
-    # aws ec2 describe-subnets --filters Name=vpc-id,Values=vpc-0099b918d2a911701 --region us-east-2 --query "Subnets[].SubnetId" --output text
+    if [ ! -z "$2" ]; then local scheme="$2"; fi
+    if [ "$scheme"="private" ]; then
+      query="\"Subnets[?MapPublicIpOnLaunch=='false'].SubnetId\""
+    fi
+
+    echo "aws --profile $PROFILE --region $REGION ec2 describe-subnets --filters Name=vpc-id,Values=$vpcid --query $query --output text"
+    return 0
     local sn=$(aws --profile $PROFILE --region $REGION ec2 describe-subnets --filters Name=vpc-id,Values=$vpcid "Name=tag:scheme,Values=$scheme" --query "Subnets[].SubnetId" --output text)
+    if [ $? -ne 0 ]; then
+      echo "failed to get subnets for vpcId $vpcid" >&2
+      return 1
+    fi
+    if [ -z "$sn" ]; then
+      echo "no subnets found for vpcId $vpcid" >&2
+      return 1
+    fi
     local ret="["
     for i in $sn; do
         ret+="\"$i\","
@@ -101,6 +225,13 @@ function getSubnetsForPlatform {
     ret="${ret%?}"
     ret+="]"
     echo "$ret"
+}
+
+function getSubnetsForPlatform {
+    local scheme="private"
+    if [ ! -z "$1" ]; then local scheme="$1"; fi
+    local vpcid="$(getVpcId)"
+    getSubnetsForVpcId "$vpcid" "$scheme"
 }
 
 function deleteSubnetGroup {
@@ -122,46 +253,6 @@ function deleteSubnetGroup {
         return 1
     fi
 }
-
-function isDbSubnetGroupExists {
-    if [ -z "$1" ]; then
-        echo "you must subnet group name in first parameter"
-        return
-    fi
-
-    aws --profile $PROFILE --region $REGION rds describe-db-subnet-groups --db-subnet-group-name "$1" &>/dev/null
-    if [ $? -eq 0 ]; then
-        return 0
-    else
-        return 1
-    fi
-}
-function createDbSubnetGroup {
-    if [ -z "$1" ]; then
-        echo "you must subnet group name in first parameter"
-        return
-    fi
-
-    if isDbSubnetGroupExists $1; then
-        echo "DB Subnet Group '$1' already exists. Nothing to do."
-        return
-    fi
-
-    SUBNETS="$(getSubnetsForPlatform)"
-
-    if [ -z "$SUBNETS" ]; then
-        echo "No subnets found for platform '$PLATFORM'. Cannot create DB Subnet Group."
-        return
-    fi
-
-    echo "Creating subnet group with subnets : $SUBNETS"
-    aws --profile $PROFILE --region $REGION rds create-db-subnet-group \
-        --db-subnet-group-name $1 \
-        --db-subnet-group-description "Subnet group for the aurora DB that backs devlake" \
-        --subnet-ids $SUBNETS \
-        --tags $(getTagsRaw "$1")
-}
-
 
 function listVpcPeeringConnectionsForPlatform {
   local rgn=$(getRegion)

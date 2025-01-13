@@ -24,6 +24,18 @@ function getInstanceId {
     return 0
 }
 
+function getSgName {
+    if [ -z "$1" ]; then
+        echo "you must the name of the resource for which the security group is being"
+        echo "created. For example if this is the SG for an EC2 Instance then you must"
+        echo "pass the ec2 instance name in the first parameter."
+        echo "If this is an SG for an EFS filesystem, then pass the EFS filesystem name"
+        echo "etc."
+        return 1
+    fi
+    echo "$1-sg"
+}
+
 function getInstancePrivateIp {
     if [ -z "$1" ]; then
         echo "you must supply the instanceID in the first parameter"
@@ -71,7 +83,7 @@ function createInstance {
     local INSTANCETYPE="$3"
 
     # ok calculate the security group name from $1
-    local name="$1-sg"
+    local name=$(getSgName "$1")
     if ! isSgExists "$name"; then
         echo "Security group $name does not exist.. creating"
         createSg "$name"
@@ -97,7 +109,6 @@ function createInstance {
     fi
 
     # Also create an instance profile if this doesn't exist
-    local ROLENAME="$1-instanceprofile"
     local SGIDS=$(getSgId "$name")
     if [ $? -ne 0 ]; then
         echo "Failed to get security group id for $name"
@@ -123,7 +134,7 @@ function createInstance {
             return 1
         fi
         echo "Awaiting instance creation..."
-        aws --profile $PROFILE --region $REGION ec2 wait instance-running --instance-ids "$iid"
+        aws --profile $PROFILE --region $REGION ec2 wait instance-status-ok --instance-ids "$iid"
         if [ $? -ne 0 ]; then
             echo "Instance creation failed.."
             return 1
@@ -133,6 +144,8 @@ function createInstance {
         local iid=$(getInstanceId "$1")
         echo "Instance with id $iid already exists"
     fi
+    createEc2InstanceProfile "$1"
+    associateInstanceProfile "$1"
 }
 
 function destroyInstance {
@@ -164,7 +177,7 @@ function destroyInstance {
         echo "Instance terminated"
     fi
 
-    local name="$1-sg"
+    local name=$(getSgName "$1")
     if isSgExists "$name"; then
         echo "removing associated security group $name"
         deleteSg "$name"
@@ -175,6 +188,8 @@ function destroyInstance {
     else
         echo "Security group $name does not exist"
     fi
+
+    destroyEc2InstanceProfile $1
 }
 
 

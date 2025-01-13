@@ -1,5 +1,21 @@
 #!/bin/bash
 
+
+#############
+### DEBUG
+#############
+
+function bawsDebug {
+    if [ ! -z "$BAWS_DEBUG" ]; then
+        if [ "$BAWS_DEBUG"==1 ]; then
+          set -x
+          trap read debug
+          return 0
+        fi
+    fi
+    set +x
+}
+
 #############
 ### LOGGING
 #############
@@ -284,4 +300,16 @@ function isNumeric {
   else
     return 1
   fi
+}
+
+function replaceEnvFileValue {
+    if [ -z "$1" ]; then
+        echo "you must supply the property name in the first parameter"
+        return
+    fi
+    if [ -z "$2" ]; then
+        echo "you must supply the property value for $1 in the second parameter"
+        return
+    fi
+    sed -i '' "s|^$1=.*|$1=\"$2\"|" ./.env
 }
