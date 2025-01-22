@@ -121,18 +121,46 @@ function ssmToStack {
     aws --profile $PROFILE --region $REGION ssm start-session --target $iid
 }
 
+function shellTo {
+    if [ -z "$INSTANCENAME" ]; then
+        if [ -z "$1" ]; then
+            echo "You must supply the instance name in the first parameter"
+            return 1
+        else
+            INSTANCENAME="$1"
+        fi
+    fi
+    local iid=$(getInstanceId "$INSTANCENAME")
+    aws --profile $PROFILE --region $REGION ssm start-session --target $iid
+}
 
-function tunnelToInstanceOverSSM {
+function tunnelToGrafana {
+  local iid=$(getInstanceId "$INSTANCENAME")
+  aws --profile $PROFILE --region $REGION ssm start-session --target "$iid" \
+    --document-name AWS-StartPortForwardingSession \
+    --parameters "{\"portNumber\":[\"3000\"],\"localPortNumber\":[\"3000\"]}"
+}
+
+function tunnelTo {
     if [ -z "$1" ]; then
-        echo "must pass port number in first parameter"
+        echo "You must supply the port number for the first parameter"
+        return 1
     fi
-    if [ -z "$2" ]; then
-        echo "must supply instanceID in second parameter"
+    if [ -z "$INSTANCENAME" ]; then
+        if [ -z "$2" ]; then
+            echo "You must supply the instance name in the second parameter"
+            return 1
+        else
+            INSTANCENAME="$2"
+        fi
     fi
-    aws --profile $PROFILE --region $REGION ssm start-session --target $2 \
+    local iid=$(getInstanceId "$INSTANCENAME")
+    echo "Tunneling to $iid on port $1"
+    aws --profile $PROFILE --region $REGION ssm start-session --target "$iid" \
         --document-name AWS-StartPortForwardingSession \
         --parameters "{\"portNumber\":[\"$1\"],\"localPortNumber\":[\"$1\"]}"
 }
+
 
 # SSH over SSM tunnel
 # TODO THIS!

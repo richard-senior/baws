@@ -23,6 +23,12 @@ function setEnvVar {
    export "$1"="$2"
 }
 
+# NO SECRETS IN HERE!
+setEnvVar "BAWS_SECRETS_PREFIX" "BAWS_"
+setEnvVar "BAWS_SECRETS_FILE" "$BAWS_DIR/.secrets.json"
+setEnvVar "BAWS_AUTO_SYNC_SECRETS" "false"
+getSecrets
+
 setEnvVar "PROFILE" "npt"
 setEnvVar "REGION" "eu-west-1"
 setEnvVar "VPCNAME" "pet-servers"

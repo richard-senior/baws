@@ -38,6 +38,9 @@ else
 fi
 
 source $BAWS_DIR/utils.sh
+source $BAWS_DIR/secrets.sh
+source $BAWS_DIR/conf.sh
+source $BAWS_DIR/auth.sh
 
 if ! isApplicationInstalled "aws"; then
     bawsLog "You must install AWS CLI before using BAWS"
