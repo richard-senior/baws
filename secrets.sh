@@ -7,23 +7,15 @@
 
 function getSecrets {
     # first try reading the configured local secrets file
+    if [ -z "$BAWS_SECRETS_FILE" ] || [ ! -f "$BAWS_SECRETS_FILE" ]; then
+        echo "The environment variable BAWS_SECRETS_FILE is not set or the file does not exist"
+        echo "attempting to recreate local secrets file from aws"
+        local foo=$(updateJsonFromAws)
+    fi
+
     local foo=$(getSecretsFromLocalFile)
-    if [ $? -eq 0 ]; then
-        exportSecretsFromJson "$foo"
-        if [ -n "$BAWS_AUTO_SYNC_SECRETS" ] && [ "$BAWS_AUTO_SYNC_SECRETS" = "true" ]; then
-            # if the secrets were loaded and we're doing auto aws sync then try syncing the secrets to aws
-            echo "updating secrets in AWS"
-            local foo=$(updateAwsFromLocalSecrets)
-            if [ $? -ne 0 ]; then
-                bawsLog """
-                    Secrets have been exported to variables from the local file... however:
-                    Failed to sync secrets to aws. You may have to do this yourself by calling 'updateAwsFromLocalSecrets' and observing any errors
-                """
-            fi
-            return 0
-        else
-            return 0
-        fi
+    if [ $? -eq 0 ] && [ -f "$BAWS_SECRETS_FILE" ]; then
+        return 0
     fi
 
     # if that failed, try reading the secrets from aws
@@ -235,6 +227,32 @@ function getSecretsFromAWS {
     if [ $? -ne 0 ]; then return 1; fi
     if [ -z "$secretsValue" ]; then return 1; fi
     echo "$secretsvalue"
+}
+
+function updateJsonFromAws {
+    if [ -z "$BAWS_SECRETS_FILE" ]; then
+        echo "you must set the environment variable BAWS_SECRETS_FILE which specifies the location of the"
+        echo "local secrets file. This should be a hidden file that is not checked in (ie .gitignore etc)"
+        return 1
+    fi
+    if [ -z "$BAWS_SECRETS_PREFIX" ]; then
+        bawsLog '''
+            you must set the environment variable BAWS_SECRETS_PREFIX which should indicate
+            the name of a key in aws secrets manager in this account which contains the
+            secrets for this stack
+        '''
+        return 1
+    fi
+    local secretsValue=$(aws --profile $PROFILE --region $REGION secretsmanager get-secret-value --secret-id "$BAWS_SECRETS_PREFIX" --query "SecretString" --output text 2>/dev/null)
+    if [ $? -ne 0 ]; then return 1; fi
+    if [ -z "$secretsValue" ]; then return 1; fi
+    echo "$secretsValue" > "$BAWS_SECRETS_FILE"
+    bawsLog '''
+        Recreated local secrets file $BAWS_SECRETS_FILE from aws secrets manager
+        you can now exit the secrets in this local file
+        you can re-sync the local secrets with the remote ones by running
+        updateAwsFromLocalSecrets
+    '''
 }
 
 function updateAwsFromJson {

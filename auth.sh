@@ -31,11 +31,6 @@ function amOnVpn {
 }
 
 function login {
-    if ! amOnVpn; then
-        echo "====== INFO ======="
-        echo "You're not currently on the VPN.. The chances are you should be"
-        echo "==================="
-    fi
     if amLoggedIn; then return 0; fi
     if ! isApplicationInstalled 'dcpcli'; then
         echo "====== INFO ======="
@@ -43,9 +38,12 @@ function login {
         echo "==================="
         return 1
     fi
-    dcpcli auth store plaintext
     dcpcli auth url set "$AUTHURL"
-    dcpcli auth login -n $PROFILE
-    aws configure set region eu-west-2 --profile $PROFILE
+    if [ -n "$SET_LOGIN_TIMETOUT" ]; then
+        echo "setting timeout"
+        dcpcli auth login -n $PROFILE --session-timeout 480
+    else
+        dcpcli auth login -n $PROFILE
+    fi
+    aws configure set region $REGION --profile $PROFILE
 }
-

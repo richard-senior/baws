@@ -39,4 +39,6 @@ setEnvVar "PLATFORM" "pet-servers"
 setEnvVar "USERNAME" "richard.senior"
 setEnvVar "OWNER" "ee-platform-services"
 setEnvVar "PROJECT_DESCRIPTION" "Apache Devlake stack"
-
+# when using ./auth.sh#login automatically tries to set the auth session timeout
+# Doesn't work on some accounts
+setEnvVar "SET_LOGIN_TIMETOUT" "true"
