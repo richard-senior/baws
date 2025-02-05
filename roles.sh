@@ -10,7 +10,7 @@ function policyExists {
         echo "you must supply the policy name or id in the first parameter"
         return 1
     fi
-    local id=$(aws --profile $PROFILE --region $REGION iam list-policies --query "Policies[?PolicyName=='$1'].PolicyId" --output text 2>/dev/null)
+    local id=$(aws --profile $PROFILE iam list-policies --query "Policies[?PolicyName=='$1'].PolicyId" --output text 2>/dev/null)
     if [ $? -ne 0 ]; then return 1; fi
     if [ -z "$id" ]; then return 1; fi
     return 0
@@ -23,7 +23,7 @@ function getPolicyArn {
         echo "you must supply the policy name or id in the first parameter"
         return 1
     fi
-    local arn=$(aws --profile $PROFILE --region $REGION iam list-policies --query "Policies[?PolicyName=='$1'].Arn" --output text 2>/dev/null)
+    local arn=$(aws --profile $PROFILE iam list-policies --query "Policies[?PolicyName=='$1'].Arn" --output text 2>/dev/null)
     if [ $? -ne 0 ]; then return 1; fi
     if [ -z "$arn" ]; then return 1; fi
     echo "$arn"
@@ -77,7 +77,7 @@ function isManagedPolicyOnRole {
         echo "you must supply the aws policy arn in the second parameter (ie arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore)"
         return 1
     fi
-    local foo=$(aws --profile $PROFILE --region $REGION iam list-attached-role-policies --role-name "$1" --query "AttachedPolicies[].PolicyArn" --output text 2>/dev/null)
+    local foo=$(aws --profile $PROFILE iam list-attached-role-policies --role-name "$1" --query "AttachedPolicies[].PolicyArn" --output text 2>/dev/null)
     if [ $? -ne 0 ]; then
         echo "Failed to list policies on role with name $1"
         return 1
@@ -114,7 +114,7 @@ function attachManagedPolicyToRole {
         echo "role $1 does not exist"
         return 1
     fi
-    local foo=$(aws --profile $PROFILE --region $REGION iam attach-role-policy --role-name "$1" --policy-arn $2 2>/dev/null)
+    local foo=$(aws --profile $PROFILE iam attach-role-policy --role-name "$1" --policy-arn $2 2>/dev/null)
     if [ $? -eq 0 ]; then
         echo "policy $2 attached to role $1"
         return 0
@@ -131,7 +131,7 @@ function getRoleId {
         echo "you must role name in first parameter"
         return
     fi
-    local foo=$(aws --profile $PROFILE --region $REGION iam get-role --role-name "$1" --query "Role.RoleId" --output text 2>/dev/null)
+    local foo=$(aws --profile $PROFILE iam get-role --role-name "$1" --query "Role.RoleId" --output text 2>/dev/null)
     if [ $? -eq 0 ]; then
         echo "$foo"
         return 0
@@ -144,7 +144,7 @@ function getRoleName {
         echo "you must role id in first parameter"
         return 1
     fi
-    local foo=$(aws --profile $PROFILE --region $REGION iam list-roles --query "Roles[?RoleId==$1].RoleName" --output text 2>/dev/null)
+    local foo=$(aws --profile $PROFILE iam list-roles --query "Roles[?RoleId==$1].RoleName" --output text 2>/dev/null)
     if [ $? -eq 0 ]; then
         echo "$foo"
         return 0
@@ -157,7 +157,7 @@ function getRoleArn {
         echo "you must role name in first parameter"
         return 1
     fi
-    local foo=$(aws --profile $PROFILE --region $REGION iam get-role --role-name "$1" --query "Role.Arn" --output text 2>/dev/null)
+    local foo=$(aws --profile $PROFILE iam get-role --role-name "$1" --query "Role.Arn" --output text 2>/dev/null)
     if [ $? -eq 0 ]; then
         echo "$foo"
         return 0
@@ -170,7 +170,7 @@ function roleExists {
         echo "you must role name in first parameter"
         return 1
     fi
-    if aws --profile $PROFILE --region $REGION iam get-role --role-name "$1" &>/dev/null; then
+    if aws --profile $PROFILE iam get-role --role-name "$1" &>/dev/null; then
         return 0
     else
         return 1
@@ -186,21 +186,24 @@ function deleteRole {
         echo "role $1 does not exist. No need to delete it"
         return 1
     fi
-
+    if [[ $1 == *"AWSServiceRole"* ]]; then
+        echo "cannot delete legacy AWS service role $1"
+        return 1
+    fi
+    echo "DELETING $1"
     local n="$1"
     if isInstanceProfileExists "$n"; then
         echo "deleting instance profile $n"
-        local foo=$(aws --profile $PROFILE --region $REGION iam remove-role-from-instance-profile --instance-profile-name "$n" --role-name "$n" 2>/dev/null)
+        local foo=$(aws --profile $PROFILE iam remove-role-from-instance-profile --instance-profile-name "$n" --role-name "$n" 2>/dev/null)
         if [ $? -ne 0 ]; then
             echo "failed to detach role from instance profile $n"
             return 1
         fi
-        local foo=$(aws --profile $PROFILE --region $REGION iam delete-instance-profile --instance-profile-name "$n" 2>/dev/null)
+        local foo=$(aws --profile $PROFILE iam delete-instance-profile --instance-profile-name "$n" 2>/dev/null)
         if [ $? -ne 0 ]; then
             echo "failed to delete instance profile $n"
             return 1
         fi
-        return 0
     fi
 
     local rid=$(getRoleId "$n")
@@ -211,28 +214,32 @@ function deleteRole {
         echo "Found role with id $rid"
     fi
 
-    local POLICIES=$(aws --profile $PROFILE --region $REGION iam list-attached-role-policies --role-name $n --query "AttachedPolicies[].PolicyArn" --output text 2>/dev/null)
+    local POLICIES=$(aws --profile $PROFILE iam list-attached-role-policies --role-name $n --query "AttachedPolicies[].PolicyArn" --output text 2>/dev/null)
     if [ $? -ne 0 ]; then
         echo "failed to list attached role policies on role $n"
         return 1
     fi
     if [ ! -z "$POLICIES" ]; then
         for POLICY in $POLICIES; do
-            local ATTACHMENT_COUNT=$(aws --profile $PROFILE --region $REGION iam get-policy --policy-arn $POLICY --query "Policy.AttachmentCount" --output text 2>/dev/null)
+            local ATTACHMENT_COUNT=$(aws --profile $PROFILE iam get-policy --policy-arn $POLICY --query "Policy.AttachmentCount" --output text 2>/dev/null)
             if [ $? -ne 0 ]; then
                 echo "failed to get policy attachment count on role $n"
-                return 1
+                continue
             fi
-            local foo=$(aws --profile $PROFILE --region $REGION iam detach-role-policy --role-name $n --policy-arn $POLICY 2>/dev/null)
+            local foo=$(aws --profile $PROFILE iam detach-role-policy --role-name $n --policy-arn $POLICY 2>/dev/null)
             if [ $? -ne 0 ]; then
                 echo "failed to detach policy $POLICY from role $n"
-                return 1
+                continue
             fi
-            if [ 1 = $ATTACHMENT_COUNT ]; then
-                echo "Policy is only attached to $ATTACHMENT_COUNT roles, deleting it."
+            if [[ $POLICY == *":aws:policy/"* ]] then
+                echo "cannot delete AWS managed policy"
+                continue
+            fi
+            if [[ 1 -eq $ATTACHMENT_COUNT ]]; then
+                echo "Policy is $POLICY is only attached to $ATTACHMENT_COUNT roles, deleting it."
                 aws --profile $PROFILE iam delete-policy --policy-arn $POLICY
             else
-                echo "Detatch but don't delete policy because it's attached to $ATTACHMENT_COUNT roles"
+                echo "Detatch but don't delete policy because it's attached to $ATTACHMENT_COUNT roles or is AWS managed"
             fi
         done
     else
@@ -248,21 +255,22 @@ function deleteRole {
     fi
     if [ ! -z "$POLICIES" ]; then
         for POLICY in $POLICIES; do
-            local foo=$(aws --profile $PROFILE --region $REGION iam delete-role-policy --role-name $n --policy-name $POLICY 2>/dev/null)
+            local foo=$(aws --profile $PROFILE iam delete-role-policy --role-name $n --policy-name $POLICY 2>/dev/null)
             if [ $? -ne 0 ]; then
                 echo "failed to delete role policy $POLICY for role $n"
-                return 1
+                continue
             fi
         done
     else
-     echo "Found no inline policies"
+    echo "Found no inline policies"
     fi
     echo "Deleting role $n"
-    local foo=$(aws --profile $PROFILE --region $REGION iam delete-role --role-name "$n" 2>/dev/null)
+    local foo=$(aws --profile $PROFILE iam delete-role --role-name "$n" 2>/dev/null)
     if [ $? -ne 0 ]; then
         echo "Failed to delete role $n"
         return 1
     fi
+    echo "ROLE $n DELETED"
     return 0
 }
 
@@ -281,7 +289,7 @@ function createRole {
     fi
     local tags=$(getTags "$STACK")
     # Create the IAM role
-    local foo=$(aws --profile $PROFILE --region $REGION iam create-role --role-name "$1" --tags $tags --assume-role-policy-document "$2" --query "Role.RoleId" --output text 2>/dev/null)
+    local foo=$(aws --profile $PROFILE iam create-role --role-name "$1" --tags $tags --assume-role-policy-document "$2" --query "Role.RoleId" --output text 2>/dev/null)
     if [ $? -ne 0 ]; then return 1; fi
     if [ -z "$foo" ]; then return 1; fi
     return 0
@@ -305,7 +313,7 @@ function getInstanceProfileId {
         echo "you must instance profile name in first parameter"
         return 1
     fi
-    local foo=$(aws --profile $PROFILE --region $REGION iam get-instance-profile --instance-profile-name "$1" --query "InstanceProfile.InstanceProfileId" --output text 2>/dev/null)
+    local foo=$(aws --profile $PROFILE iam get-instance-profile --instance-profile-name "$1" --query "InstanceProfile.InstanceProfileId" --output text 2>/dev/null)
     if [ $? -ne 0 ]; then return 1; fi
     if [ -z "$foo" ]; then return 1; fi
     echo "$foo"
@@ -325,7 +333,7 @@ function isProfileAttachedToInstance {
     local ipn=$(getInstanceProfileId "$1")
     if [ -z "$ipn" ]; then return 1; fi
     local iid=$(getInstanceId "$2")
-    aws --profile $PROFILE --region $REGION ec2 describe-iam-instance-profile-associations --filters "Name=instance-id,Values=$iid" --query "IamInstanceProfileAssociations[].IamInstanceProfile.Id" --output text
+    aws --profile $PROFILE ec2 describe-iam-instance-profile-associations --filters "Name=instance-id,Values=$iid" --query "IamInstanceProfileAssociations[].IamInstanceProfile.Id" --output text
     if [ $? -ne 0 ]; then
         echo "failed to get instance profile associations"
         return 1
@@ -354,7 +362,7 @@ function associateInstanceProfile {
     #    return 0
     #fi
 
-    local foo=$(aws --profile $PROFILE --region $REGION ec2 associate-iam-instance-profile --iam-instance-profile Name=$ipname --instance-id $iid 2>/dev/null)
+    local foo=$(aws --profile $PROFILE ec2 associate-iam-instance-profile --iam-instance-profile Name=$ipname --instance-id $iid 2>/dev/null)
     if [ $? -ne 0 ]; then
         echo "failed to attach $ipname to instance $1"
         return 1;
@@ -370,7 +378,7 @@ function isInstanceProfileExists {
         echo "you must supply instance profile name in first parameter"
         return 1
     fi
-    local foo=$(aws --profile ${PROFILE} --region ${REGION} iam get-instance-profile --instance-profile-name "$1" --query "InstanceProfile.InstanceProfileId" --output text 2>/dev/null)
+    local foo=$(aws --profile ${PROFILE} iam get-instance-profile --instance-profile-name "$1" --query "InstanceProfile.InstanceProfileId" --output text 2>/dev/null)
     if [ $? -ne 0 ]; then return 1; fi
     if [ -z "$foo" ]; then return 1; fi
     return 0
@@ -403,7 +411,7 @@ function getInstanceProfilesForRole {
         echo "you must role name in the second parameter"
         return 1
     fi
-    local foo=$(aws --profile $PROFILE --region $REGION iam list-instance-profiles-for-role --role-name $1 --query "InstanceProfiles[].InstanceProfileId" --output text 2>/dev/null)
+    local foo=$(aws --profile $PROFILE iam list-instance-profiles-for-role --role-name $1 --query "InstanceProfiles[].InstanceProfileId" --output text 2>/dev/null)
     if [ $? -ne 0 ]; then return 1; fi
     echo "$foo"
 }
@@ -426,7 +434,7 @@ function attachRoleToInstanceProfile {
 
     echo "attaching role $2 to instance profile $1"
 
-    local foo=$(aws --profile $PROFILE --region $REGION iam add-role-to-instance-profile --instance-profile-name "$1" --role-name "$2" 2>/dev/null)
+    local foo=$(aws --profile $PROFILE iam add-role-to-instance-profile --instance-profile-name "$1" --role-name "$2" 2>/dev/null)
     if [ $? -ne 0 ]; then
         echo "Failed to attache role $ROLENAME to instance profile $1"
         return 1
@@ -493,7 +501,7 @@ function destroyEc2InstanceProfile {
 
     if isInstanceProfileExists "$ipname"; then
         echo "Deleting instance profile with name $1"
-        local foo=$(aws --profile $PROFILE --region $REGION iam delete-instance-profile --instance-profile-name $ipname 2>/dev/null)
+        local foo=$(aws --profile $PROFILE iam delete-instance-profile --instance-profile-name $ipname 2>/dev/null)
         if [ $? -eq 0 ]; then
             echo "deleted instance profile $ipname"
         else
@@ -534,7 +542,7 @@ function createEc2InstanceProfile {
     echo "Instance profile name is $ipname"
 
     if ! isInstanceProfileExists "$ipname"; then
-        local ipid=$(aws --profile $PROFILE --region $REGION iam create-instance-profile --instance-profile-name "$ipname" --query "InstanceProfile.InstanceProfileId" --output text 2>/dev/null)
+        local ipid=$(aws --profile $PROFILE iam create-instance-profile --instance-profile-name "$ipname" --query "InstanceProfile.InstanceProfileId" --output text 2>/dev/null)
         if [ $? -ne 0 ]; then
             echo "error creating instance profile $ipname"
             return 1
@@ -555,47 +563,66 @@ function createEc2InstanceProfile {
     return 0
 }
 
-
 function deleteUnusedRolesByProfileAndDaysOld {
-  if [ -z "$1" ]; then
-      echo "must supply profile name in first parameter"
-      return 1
+  if [ -z "$PROFILE" ]; then
+    if [ -z "$1" ]; then
+        echo "must supply profile name in first parameter"
+        return 1
+    else
+        export PROFILE="$1"
+    fi
   fi
-  total_deleted=0
-  local ROLE_REGEX="--path-prefix /s"
-  #local ROLE_REGEX="/"
 
-  #90 days ago
+  local total_deleted=0
+  local prev_total=0
+  #local ROLE_REGEX="--path-prefix /s"
+  #local ROLE_REGEX="/"
+  local ROLE_REGEX=""
+
+  #days ago
+  local sixhundreddays=$(date --date '600 days ago' +'%s')
   local fourhundreddays=$(date --date '400 days ago' +'%s')
   local ninetydays=$(date --date '400 days ago' +'%s')
-  local ROLES=$(aws --profile $1 iam list-roles $ROLE_REGEX --no-paginate --max-items 1000 --query "Roles[].RoleName" --output text)
+  local ROLES=$(aws --profile $PROFILE iam list-roles $ROLE_REGEX --no-paginate --max-items 1000 --query "Roles[].RoleName" --output text)
   #aws --profile non-production iam list-roles --no-paginate --query "Roles[].RoleLastUsed" --output json
   #RoleLastUsed
+  local numRoles=$(wc -w <<< "$ROLES")
+  echo "Found potentially redundant $numRoles roles"
   for ROLE in $ROLES; do
-    echo "total deleted $total_deleted"
-    local rl=$(aws --profile $1 iam get-role --no-paginate --role-name $ROLE --output json)
+    if [ "$total_deleted" -ne "$prev_total" ]; then
+        echo "TOTAL DELETED $total_deleted"
+        prev_total=$total_deleted
+    fi
+    local rl=$(aws --profile $PROFILE iam get-role --no-paginate --role-name $ROLE --output json)
     local crd=$(echo "$rl" | jq -r '.Role.CreateDate')
     if [ ! -z "$crd" ] || [[ "$crd" != "null" ]] || [[ "$crd" != "None" ]]; then
       local crdd=$(date --date $crd +'%s')
-      if [ $crdd -gt $ninetydays ]; then
-        continue
-      fi
+      if [ $crdd -gt $fourhundreddays ]; then continue; fi
     else
-      echo "role $ROLE has no create date.. skipping"
       continue
     fi
     local lud=$(echo "$rl" | jq -r '.Role.RoleLastUsed.LastUsedDate')
     if [ -z "$lud" ] || [[ "$lud" == "null" ]] || [[ "$lud" == "None" ]]; then
-      echo "$ROLE [Expired - no last used info, created $crd]"
-      deleteRole $1 $ROLE
+        echo "$ROLE [Expired - no last used info, created $crd].. Deleting."
+        deleteRole "$ROLE"
+        if [ $? -eq 0 ]; then
+            local total_deleted=$((total_deleted+1))
+        else
+            echo "failed to delete role $ROLE"
+        fi
+        continue
     else
       #2022-08-31T15:21:34+00:00
       local d=$(date --date $lud +'%s')
-      if [ $d -lt $ninetydays ]; then
-        echo "$ROLE [Expired - $lud more than n days old. Created $crd]"
-        deleteRole $1 $ROLE
-      else
-        echo "ignoring $ROLE less than n days since last use"
+      if [ $d -lt $fourhundreddays ]; then
+        echo "$ROLE [Expired - $lud more than n days old. Created $crd].. Deleting."
+        deleteRole "$ROLE"
+        if [ $? -eq 0 ]; then
+            local total_deleted=$((total_deleted+1))
+        else
+            echo "failed to delete role $ROLE"
+        fi
+        continue
       fi
     fi
   done
@@ -605,7 +632,7 @@ function deleteUnusedRolesByProfileAndDaysOld {
 function listInstanceProfilesForPlatform {
   local rgn=$(getRegion)
   local plat=$(getPlatform)
-  local foo=$(aws --profile non-production --region $rgn iam list-instance-profiles --query "InstanceProfiles[].InstanceProfileName" --output text)
+  local foo=$(aws --profile non-production iam list-instance-profiles --query "InstanceProfiles[].InstanceProfileName" --output text)
   if [ -z "$foo" ]; then
     echo "no instance profiles found!?"
     return
@@ -617,11 +644,10 @@ function listInstanceProfilesForPlatform {
   done
 }
 
-
 function listIamRolesForPlatform {
   local plat=$(getPlatform)
   local rgn=$(getRegion)
-  local foo=$(aws --profile non-production --region $rgn iam list-roles --query "Roles[].[RoleId,RoleName]" --output text)
+  local foo=$(aws --profile non-production iam list-roles --query "Roles[].[RoleId,RoleName]" --output text)
   echo "$foo" | while read -r line
   do
     local name=$(awk '{print $NF;}' <<< "$line")
