@@ -45,7 +45,7 @@ source $BAWS_DIR/auth.sh
 if ! isApplicationInstalled "aws"; then
     bawsLog "You must install AWS CLI before using BAWS"
 fi
-
+/Users/richard/scripts/bash
 if ! isCanConnect; then
     bawsLog """
         BAWS cannot currently connect to AWS using profile \"$PROFILE\"
